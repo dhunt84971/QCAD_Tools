@@ -26,8 +26,11 @@ faster for bulk work; see **Which front end** below.
 
 - **QCAD Pro 3.x** for DWG input — the DWG plugin is Pro-only. The GPL/community
   build works for DXF input.
-- Linux, `bash`, `realpath`, `find` (GNU coreutils). Developed against QCAD
-  3.32.1 Pro on Linux.
+- Linux, `bash`, `realpath`, `find` (GNU coreutils).
+
+Verified against QCAD Pro **3.29.6** and **3.32.1** on Linux. Every QCAD API
+the tools use exists in both; where the script library differs between releases
+the add-on detects it and falls back (see the traps section below).
 
 Both front ends find QCAD themselves: they honor `$QCAD_HOME`, then look for
 `~/opt/qcad-*-pro-linux-*/qcad` and `/opt/qcad-*/qcad`, then fall back to
