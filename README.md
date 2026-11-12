@@ -117,6 +117,28 @@ would overwrite each other.
 If the installation folder is not writable — a system-wide install under
 `/opt` — run `sudo ./install-addon`.
 
+### If a menu entry seems to do nothing
+
+The add-on does **not** need to be on your `PATH` — QCAD loads it from its own
+`scripts/` folder, which is where `install-addon` puts it. If the file
+selection window appears at all, the add-on is installed correctly.
+
+Every step reports itself in QCAD's command line history at the bottom of the
+window, so that is the first place to look: after choosing drawings you should
+see `n drawing(s) selected, now choose a folder for the repaired copies`.
+Errors are shown in a dialog and repeated there.
+
+For anything that still fails silently, start QCAD from a terminal and watch
+its output — QCAD writes script errors there and nowhere else:
+
+```bash
+"$(dirname "$(command -v qcad)")"/qcad      # or just: qcad
+```
+
+After updating the add-on, run `./install-addon` again and **restart QCAD**:
+the installer copies files into the QCAD installation, and QCAD reads add-on
+scripts once at startup.
+
 ### Which front end
 
 The script engine runs on QCAD's GUI thread. A batch repair therefore blocks

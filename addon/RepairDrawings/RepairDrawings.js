@@ -46,14 +46,38 @@ RepairDrawings.includeBasePath = includeBasePath;
 RepairDrawings.prototype.beginEvent = function() {
     EAction.prototype.beginEvent.call(this);
 
-    if (this.getMode()==="files") {
-        this.repairFiles();
+    // Any error inside a script action is swallowed by QCAD and only reaches
+    // the terminal, so an unattended failure looks exactly like the tool doing
+    // nothing. Report it where it can actually be seen.
+    try {
+        if (this.getMode()==="files") {
+            this.repairFiles();
+        }
+        else {
+            this.repairCurrentDrawing();
+        }
     }
-    else {
-        this.repairCurrentDrawing();
+    catch (e) {
+        RepairDrawings.reportException(e);
     }
 
     this.terminate();
+};
+
+RepairDrawings.reportException = function(e) {
+    var msg = "" + e;
+    if (!isNull(e) && !isNull(e.lineNumber)) {
+        msg += "\n(" + qsTr("line") + " " + e.lineNumber + ")";
+    }
+    qWarning("RepairDrawings: " + msg);
+    EAction.handleUserWarning(qsTr("Repair Drawings failed: %1").arg(msg));
+
+    var appWin = EAction.getMainWindow();
+    if (!isNull(appWin)) {
+        QMessageBox.critical(appWin, qsTr("Repair Drawings"),
+            qsTr("The repair stopped because of an unexpected error:\n\n%1").arg(msg));
+        appWin.activateWindow();
+    }
 };
 
 /**
@@ -136,6 +160,12 @@ RepairDrawings.prototype.repairFiles = function() {
     if (isNull(files) || files.length===0) {
         return;
     }
+
+    // a breadcrumb in the command line history, so a failure between the two
+    // dialogs is visible as something other than silence:
+    EAction.handleUserMessage(
+        qsTr("%1 drawing(s) selected, now choose a folder for the repaired copies")
+        .arg(files.length));
 
     // Copies keep their original names, so two drawings with the same name
     // from different folders would overwrite each other in the output.
@@ -288,17 +318,38 @@ RepairDrawings.chooseInputFiles = function(appWin) {
 RepairDrawings.chooseOutputFolder = function(appWin, files) {
     var firstDir = new QFileInfo(files[0]).absolutePath();
     var suggested = firstDir + "-repaired";
-    new QDir(firstDir).mkpath(suggested);         // so it can be picked at once
 
-    // getExistingDirectory() is unreliable with native dialogs, so use an
-    // instance of QFileDialog in directory mode, as QCAD itself does.
-    var dlg = new QFileDialog(appWin, qsTr("Folder for the Repaired Copies"), suggested, "");
-    dlg.setOption(QFileDialog.DontUseNativeDialog, getDontUseNativeDialog());
+    // Create the suggestion up front so it can be accepted with one click.
+    // If creating it fails - a read-only parent folder, a network share - fall
+    // back to the folder the drawings came from: a file dialog opened on a
+    // directory that does not exist can silently refuse to appear.
+    if (!new QDir(suggested).exists()) {
+        new QDir(firstDir).mkpath(suggested);
+    }
+    var startDir = new QDir(suggested).exists() ? suggested : firstDir;
+
+    var dlg = new QFileDialog(appWin, qsTr("Folder for the Repaired Copies"), startDir, "");
+
+    // Always Qt's own dialog here, never the desktop's native one. A native
+    // directory chooser is unreliable across desktops - QCAD's own code says
+    // the same about getExistingDirectory() - and when it fails it fails by
+    // never appearing, which looks like the tool doing nothing at all.
+    dlg.setOption(QFileDialog.DontUseNativeDialog, true);
     dlg.fileMode = QFileDialog.Directory;
-    dlg.setOption(QFileDialog.ShowDirsOnly, true);
-    dlg.setOption(QFileDialog.DontResolveSymlinks, true);
+    if (!isNull(QFileDialog.ShowDirsOnly)) {
+        dlg.setOption(QFileDialog.ShowDirsOnly, true);
+    }
+    if (!isNull(QFileDialog.DontResolveSymlinks)) {
+        dlg.setOption(QFileDialog.DontResolveSymlinks, true);
+    }
     if (!isNull(QFileDialog.DontUseCustomDirectoryIcons)) {
         dlg.setOption(QFileDialog.DontUseCustomDirectoryIcons, true);
+    }
+    // Fill the "Directory:" box with the suggestion. Without this the box is
+    // empty and the Choose button does nothing until something is typed or
+    // picked, which reads as another dead end.
+    if (isFunction(dlg.selectFile)) {
+        dlg.selectFile(startDir);
     }
 
     if (!dlg.exec()) {
@@ -315,6 +366,14 @@ RepairDrawings.chooseOutputFolder = function(appWin, files) {
         return undefined;
     }
     var outDir = chosen[0];
+
+    // the folder may have been typed rather than picked:
+    if (!new QDir(outDir).exists() && !new QDir(outDir).mkpath(".")) {
+        QMessageBox.critical(appWin, qsTr("Repair Drawings"),
+            qsTr("This folder does not exist and could not be created:\n\n%1").arg(outDir));
+        appWin.activateWindow();
+        return undefined;
+    }
 
     var outCanonical = new QFileInfo(outDir).canonicalFilePath();
     for (var i=0; i<files.length; i++) {
