@@ -211,9 +211,9 @@ RepairEngine.describe(defects);                       // lines of plain text
 var res = RepairEngine.repairDocument(di, doc, true); // find + delete, undoable
 ```
 
-## Four traps for anyone else scripting QCAD
+## Five traps for anyone else scripting QCAD
 
-All four of these cost real debugging time here, and all four fail *silently*:
+All five of these cost real debugging time here, and all five fail *silently*:
 
 **Relative paths do not work.** QCAD's launcher calls
 `QDir::setCurrent(applicationPath)` during startup, so a relative path handed to
@@ -235,6 +235,15 @@ at startup. Get the name wrong and the folder is simply ignored, with no
 warning. Other files may live in the folder; `include("Other.js")` from the
 add-on resolves against `includeBasePath`, which is the folder the including
 file is in.
+
+**QCAD's script library is not the same in every release, and an error in an
+action is swallowed.** Helpers such as `destrDialog()`, `destr()` and
+`getDontUseNativeDialog()` exist in some versions and not others. Calling a
+missing one raises a `ReferenceError` that aborts the action, and QCAD writes
+that error only to the terminal — from the user's seat the menu entry simply
+does nothing. Reach these helpers through a `typeof(...)==="function"` check
+with a fallback, as `RepairDrawings.closeDialog()` and friends do, and wrap the
+whole action in try/catch so a failure is visible.
 
 **The GUI thread is the script thread.** A long import freezes the window, and
 a `QProgressDialog` will not repaint during it even with `processEvents()`.

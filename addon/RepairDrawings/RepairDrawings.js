@@ -113,14 +113,14 @@ RepairDrawings.prototype.repairCurrentDrawing = function() {
         return;
     }
 
-    setOverrideWaitCursor();
+    RepairDrawings.waitCursor(true);
     var res;
     try {
         // undoable: this is the user's own document, Edit > Undo must work
         res = RepairEngine.repairDocument(di, doc, true);
     }
     finally {
-        restoreOverrideCursor();
+        RepairDrawings.waitCursor(false);
     }
 
     var lines = RepairEngine.describe(res.defects);
@@ -214,8 +214,7 @@ RepairDrawings.prototype.repairFiles = function() {
 
     progress.value = files.length;
     progress.close();
-    destr(progress);
-    EAction.activateMainWindow();
+    RepairDrawings.closeDialog(progress);
 
     RepairDrawings.report(appWin, rows, outDir, canceled);
 };
@@ -278,6 +277,61 @@ RepairDrawings.prototype.repairFile = function(file, outDir) {
 // helpers
 // -----------------------------------------------------------------------
 
+// -----------------------------------------------------------------------
+// QCAD library helpers, called defensively
+//
+// QCAD's own script library differs between releases: a helper that exists in
+// one version is missing in another, and calling a missing one raises a
+// ReferenceError that aborts the whole action. Everything below goes through a
+// wrapper that falls back to whatever the running QCAD actually provides, so
+// the add-on works across versions instead of dying on one.
+// -----------------------------------------------------------------------
+
+/** close and dispose of a dialog, then put the focus back on the main window */
+RepairDrawings.closeDialog = function(dlg) {
+    if (!isNull(dlg)) {
+        if (typeof(destrDialog)==="function") {
+            destrDialog(dlg);
+        }
+        else if (typeof(destr)==="function") {
+            destr(dlg);
+        }
+        else if (isFunction(dlg.close)) {
+            dlg.close();
+        }
+    }
+    RepairDrawings.activateMainWindow();
+};
+
+RepairDrawings.activateMainWindow = function() {
+    if (isFunction(EAction.activateMainWindow)) {
+        EAction.activateMainWindow();
+        return;
+    }
+    var appWin = EAction.getMainWindow();
+    if (!isNull(appWin) && isFunction(appWin.activateWindow)) {
+        appWin.activateWindow();
+    }
+};
+
+/** true when QCAD is configured to avoid the desktop's native file dialogs */
+RepairDrawings.dontUseNativeDialog = function() {
+    if (typeof(getDontUseNativeDialog)==="function") {
+        return getDontUseNativeDialog();
+    }
+    // When in doubt use Qt's own dialog: it behaves the same everywhere.
+    return true;
+};
+
+RepairDrawings.waitCursor = function(on) {
+    if (on===true) {
+        if (typeof(setOverrideWaitCursor)==="function") { setOverrideWaitCursor(); }
+    }
+    else {
+        if (typeof(restoreOverrideCursor)==="function") { restoreOverrideCursor(); }
+    }
+};
+
 RepairDrawings.chooseInputFiles = function(appWin) {
     var lastDir = RSettings.getStringValue("RepairDrawings/InputPath",
                                            RSettings.getDocumentsLocation());
@@ -290,22 +344,20 @@ RepairDrawings.chooseInputFiles = function(appWin) {
     var dlg = new QFileDialog(appWin, qsTr("Choose Drawings to Repair"), lastDir, "");
     dlg.setNameFilters(filters);
     dlg.selectNameFilter(filters[0]);
-    dlg.setOption(QFileDialog.DontUseNativeDialog, getDontUseNativeDialog());
+    dlg.setOption(QFileDialog.DontUseNativeDialog, RepairDrawings.dontUseNativeDialog());
     if (!isNull(QFileDialog.DontUseCustomDirectoryIcons)) {
         dlg.setOption(QFileDialog.DontUseCustomDirectoryIcons, true);
     }
     dlg.fileMode = QFileDialog.ExistingFiles;
 
     if (!dlg.exec()) {
-        destrDialog(dlg);
-        EAction.activateMainWindow();
+        RepairDrawings.closeDialog(dlg);
         return undefined;
     }
 
     var files = dlg.selectedFiles();
     RSettings.setValue("RepairDrawings/InputPath", dlg.directory().absolutePath());
-    destrDialog(dlg);
-    EAction.activateMainWindow();
+    RepairDrawings.closeDialog(dlg);
 
     return files;
 };
@@ -353,14 +405,12 @@ RepairDrawings.chooseOutputFolder = function(appWin, files) {
     }
 
     if (!dlg.exec()) {
-        destrDialog(dlg);
-        EAction.activateMainWindow();
+        RepairDrawings.closeDialog(dlg);
         return undefined;
     }
 
     var chosen = dlg.selectedFiles();
-    destrDialog(dlg);
-    EAction.activateMainWindow();
+    RepairDrawings.closeDialog(dlg);
 
     if (chosen.length===0) {
         return undefined;
