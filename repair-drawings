@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+#
+# Copyright (C) 2026 dhunt84971
+#
+# This file is part of QCAD Tools.
+#
+# QCAD Tools is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation, either version 3 of the License, or (at your option) any later
+# version.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program. If not, see <https://www.gnu.org/licenses/>.
+#
+# repair-drawings - one command to make a set of incoming DWG/DXF drawings
+#                   openable in stock QCAD.
+#
+# Runs RepairSlowDrawing.js over every drawing in the given folder(s), in
+# parallel, writing repaired copies to a separate output folder under their
+# original names. Originals are never modified. Files that need no repair are
+# copied through, so the output folder is always a complete, usable set.
+#
+#   repair-drawings ~/jobs/incoming
+#       -> ~/jobs/incoming-repaired/
+#
+# Re-running skips drawings whose repaired copy is already up to date, so it is
+# safe to point at the same folder again when new sheets arrive.
+#
+set -uo pipefail
+
+PROG=$(basename "$0")
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPAIR_JS="$HERE/RepairSlowDrawing.js"
+
+usage() {
+    cat <<USAGE
+$PROG - repair incoming DWG/DXF drawings so stock QCAD can open them
+
+Usage:
+  $PROG [options] <folder|file> [folder|file ...]
+
+Options:
+  -o DIR   output folder            (default: <input folder>-repaired)
+  -j N     parallel workers         (default: min(nproc, 8); ~450 MB each)
+  -n       dry run: report what would be removed, write nothing
+  -f       force: redo files whose repaired copy is already up to date
+  -r       recurse into sub-folders
+  -q       quiet: summary only
+  -h       this help
+
+Environment:
+  QCAD_HOME   QCAD installation folder (auto-detected if unset)
+
+Exit status: 0 all drawings handled, 1 one or more failed, 2 setup error.
+USAGE
+}
+
+die() { echo "$PROG: $*" >&2; exit 2; }
+
+OUT=""; JOBS=""; DRYRUN=0; FORCE=0; RECURSE=0; QUIET=0
+while getopts ":o:j:nfrqh" opt; do
+    case $opt in
+        o) OUT=$OPTARG ;;
+        j) JOBS=$OPTARG ;;
+        n) DRYRUN=1 ;;
+        f) FORCE=1 ;;
+        r) RECURSE=1 ;;
+        q) QUIET=1 ;;
+        h) usage; exit 0 ;;
+        :) die "option -$OPTARG needs a value" ;;
+        \?) die "unknown option -$OPTARG (try -h)" ;;
+    esac
+done
+shift $((OPTIND - 1))
+[ $# -gt 0 ] || { usage >&2; exit 2; }
+
+# ---- locate QCAD ------------------------------------------------------------
+if [ -n "${QCAD_HOME:-}" ]; then
+    QCAD="$QCAD_HOME/qcad"
+else
+    QCAD=""
+    for cand in "$HOME"/opt/qcad-*-pro-linux-*/qcad /opt/qcad-*/qcad; do
+        [ -x "$cand" ] && QCAD="$cand" && break
+    done
+    [ -z "$QCAD" ] && QCAD=$(command -v qcad 2>/dev/null)
+fi
+[ -n "$QCAD" ] && [ -x "$QCAD" ] || die "cannot find QCAD; set QCAD_HOME to its install folder"
+[ -f "$REPAIR_JS" ] || die "cannot find RepairSlowDrawing.js next to this script"
+
+# DWG needs QCAD Pro; warn rather than fail, since DXF input still works.
+case "$QCAD" in *pro*) ;; *) echo "$PROG: warning: $QCAD may not be QCAD Pro; DWG input needs Pro" >&2 ;; esac
+
+# ---- collect input files ----------------------------------------------------
+declare -a FILES=()
+depth=(-maxdepth 1); [ "$RECURSE" = 1 ] && depth=()
+for arg in "$@"; do
+    if [ -d "$arg" ]; then
+        while IFS= read -r -d '' f; do FILES+=("$f"); done < <(
+            find "$arg" "${depth[@]}" -type f \
+                 \( -iname '*.dwg' -o -iname '*.dxf' \) -print0 | sort -z)
+    elif [ -f "$arg" ]; then
+        FILES+=("$arg")
+    else
+        die "no such file or folder: $arg"
+    fi
+done
+[ ${#FILES[@]} -gt 0 ] || die "no .dwg or .dxf files found"
+
+# QCAD's launcher does QDir::setCurrent(applicationPath) on startup, so a
+# relative path handed to it no longer resolves. Make every input absolute.
+for i in "${!FILES[@]}"; do
+    FILES[$i]=$(realpath -- "${FILES[$i]}") || die "cannot resolve path: ${FILES[$i]}"
+done
+
+# ---- output folder ----------------------------------------------------------
+if [ -z "$OUT" ]; then
+    first=${FILES[0]}
+    if [ -d "${1:-}" ]; then base=${1%/}; else base=$(dirname "$first"); fi
+    OUT="${base}-repaired"
+fi
+if [ "$DRYRUN" = 0 ]; then
+    mkdir -p "$OUT" || die "cannot create output folder: $OUT"
+    OUT=$(cd "$OUT" && pwd)
+    for f in "${FILES[@]}"; do
+        [ "$(cd "$(dirname "$f")" && pwd)" = "$OUT" ] && \
+            die "output folder is the same as the input folder; pick another with -o"
+    done
+fi
+
+# ---- parallelism ------------------------------------------------------------
+if [ -z "$JOBS" ]; then
+    n=$(nproc 2>/dev/null || echo 4)
+    JOBS=$(( n < 8 ? n : 8 ))
+fi
+[ "$JOBS" -ge 1 ] 2>/dev/null || die "-j needs a positive number"
+
+LOGDIR="$OUT/.repair-logs"
+[ "$DRYRUN" = 0 ] && mkdir -p "$LOGDIR"
+TMPLOGS=0
+if [ "$DRYRUN" = 1 ]; then LOGDIR=$(mktemp -d "${TMPDIR:-/tmp}/repair-drawings.XXXXXX"); TMPLOGS=1; fi
+
+say() { [ "$QUIET" = 1 ] || echo "$@"; }
+
+say "$PROG: ${#FILES[@]} drawing(s), $JOBS worker(s)$([ "$DRYRUN" = 1 ] && echo ' (dry run)')"
+say "$PROG: QCAD    $QCAD"
+[ "$DRYRUN" = 0 ] && say "$PROG: output  $OUT"
+say ""
+
+# ---- worker -----------------------------------------------------------------
+run_one() {
+    local f=$1 name base log
+    name=$(basename "$f")
+    base=${name%.*}
+    log="$LOGDIR/$base.log"
+
+    if [ "$DRYRUN" = 0 ] && [ "$FORCE" = 0 ] && [ -f "$OUT/$name" ] \
+       && [ "$OUT/$name" -nt "$f" ]; then
+        printf 'RESULT\tskipped\t0\t0\t0\t%s\t%s\n' "$f" "$OUT/$name" > "$LOGDIR/$base.result"
+        return 0
+    fi
+
+    local args=(-platform offscreen -no-dock-icon -allow-multiple-instances
+                -autostart "$REPAIR_JS" --)
+    if [ "$DRYRUN" = 1 ]; then args+=(-n); else args+=(-k -o "$OUT"); fi
+    args+=("$f")
+
+    "$QCAD" "${args[@]}" > "$log" 2>&1
+    grep -m1 -P '^RESULT\t' "$log" > "$LOGDIR/$base.result" 2>/dev/null \
+        || printf 'RESULT\terror\t0\t0\t0\t%s\t-\n' "$f" > "$LOGDIR/$base.result"
+}
+
+# ---- run, N at a time -------------------------------------------------------
+started=0
+for f in "${FILES[@]}"; do
+    while [ "$(jobs -rp | wc -l)" -ge "$JOBS" ]; do wait -n 2>/dev/null || break; done
+    run_one "$f" &
+    started=$((started + 1))
+done
+wait
+
+# ---- report -----------------------------------------------------------------
+repaired=0; clean=0; skipped=0; failed=0; dry=0; removed_total=0
+say ""
+printf '%-34s %-9s %10s %s\n' "drawing" "status" "removed" "note"
+printf '%-34s %-9s %10s %s\n' "----------------------------------" "---------" "----------" "----"
+for f in "${FILES[@]}"; do
+    name=$(basename "$f"); b=${name%.*}
+    line=$(cat "$LOGDIR/$b.result" 2>/dev/null)
+    IFS=$'\t' read -r _ status removed blocks vps _in _out <<< "$line"
+    status=${status:-error}; removed=${removed:-0}; vps=${vps:-0}
+    note=""
+    case $status in
+        repaired) repaired=$((repaired+1)); removed_total=$((removed_total+removed))
+                  [ "${vps:-0}" -gt 0 ] && note="recursive viewport removed" ;;
+        dryrun)   dry=$((dry+1))
+                  note="would remove $removed row(s), $vps viewport(s)"; removed=- ;;
+        clean)    clean=$((clean+1)); note="nothing to repair"
+                  if [ "$DRYRUN" = 0 ]; then
+                      # -p keeps the mode; touch bumps the mtime so the
+                      # up-to-date check skips it on the next run
+                      if cp -p "$f" "$OUT/$name" && touch "$OUT/$name"; then
+                          note="nothing to repair; copied through"
+                      else note="COPY FAILED"; failed=$((failed+1)); clean=$((clean-1)); fi
+                  fi ;;
+        skipped)  skipped=$((skipped+1)); note="already up to date"; removed=- ;;
+        *)        failed=$((failed+1)); status=error
+                  note="QCAD could not read it; not copied - see $LOGDIR/$b.log" ;;
+    esac
+    [ "$QUIET" = 1 ] && [ "$status" != "error" ] && continue
+    printf '%-34s %-9s %10s %s\n' "$name" "$status" "$removed" "$note"
+done
+
+echo ""
+echo "$PROG: repaired $repaired, clean $clean, skipped $skipped, failed $failed$([ "$dry" -gt 0 ] && echo ", would repair $dry")"
+[ "$removed_total" -gt 0 ] && echo "$PROG: $removed_total dead entities removed in total"
+if [ "$DRYRUN" = 0 ] && [ "$failed" = 0 ]; then
+    echo "$PROG: open the drawings in $OUT"
+fi
+if [ "$failed" -eq 0 ]; then
+    [ "$TMPLOGS" = 1 ] && rm -rf "$LOGDIR"
+else
+    echo "$PROG: logs in $LOGDIR" >&2
+fi
+exit $(( failed > 0 ? 1 : 0 ))

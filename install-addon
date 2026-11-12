@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+#
+# Copyright (C) 2026 dhunt84971
+#
+# This file is part of QCAD Tools.
+#
+# QCAD Tools is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation, either version 3 of the License, or (at your option) any later
+# version.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program. If not, see <https://www.gnu.org/licenses/>.
+#
+# install-addon - install the Repair Drawings add-on into a QCAD installation,
+#                 so that it appears in QCAD's menus.
+#
+# QCAD treats any folder under <install>/scripts that contains a .js file of
+# the same name as an add-on, and runs the global init() in its *Init.js at
+# startup. This copies the add-on (and the shared engine it includes) to:
+#
+#     <install>/scripts/Misc/MiscIO/RepairDrawings/
+#
+# so the two entries appear in Misc > IO.
+#
+set -uo pipefail
+
+PROG=$(basename "$0")
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+SRC="$HERE/addon/RepairDrawings"
+ENGINE="$HERE/RepairEngine.js"
+RELPATH="scripts/Misc/MiscIO/RepairDrawings"
+
+usage() {
+    cat <<USAGE
+$PROG - install the Repair Drawings add-on into QCAD
+
+Usage:
+  $PROG [-u] [-q] [-h]
+
+Options:
+  -u   uninstall: remove the add-on from the QCAD installation
+  -q   quiet
+  -h   this help
+
+Environment:
+  QCAD_HOME   QCAD installation folder (auto-detected if unset)
+
+The add-on is installed into <QCAD_HOME>/$RELPATH
+Restart QCAD afterwards: add-ons are loaded at startup.
+USAGE
+}
+
+die() { echo "$PROG: $*" >&2; exit 2; }
+
+UNINSTALL=0; QUIET=0
+while getopts ":uqh" opt; do
+    case $opt in
+        u) UNINSTALL=1 ;;
+        q) QUIET=1 ;;
+        h) usage; exit 0 ;;
+        \?) die "unknown option -$OPTARG (try -h)" ;;
+    esac
+done
+
+say() { [ "$QUIET" = 1 ] || echo "$@"; }
+
+# ---- locate the QCAD installation folder ------------------------------------
+if [ -n "${QCAD_HOME:-}" ]; then
+    HOME_DIR="$QCAD_HOME"
+else
+    HOME_DIR=""
+    for cand in "$HOME"/opt/qcad-*-pro-linux-*/qcad /opt/qcad-*/qcad; do
+        [ -x "$cand" ] && HOME_DIR=$(dirname "$cand") && break
+    done
+    if [ -z "$HOME_DIR" ]; then
+        bin=$(command -v qcad 2>/dev/null) || true
+        [ -n "$bin" ] && HOME_DIR=$(dirname "$(readlink -f "$bin")")
+    fi
+fi
+[ -n "$HOME_DIR" ] && [ -d "$HOME_DIR" ] \
+    || die "cannot find QCAD; set QCAD_HOME to its install folder"
+[ -x "$HOME_DIR/qcad" ] \
+    || die "$HOME_DIR does not look like a QCAD installation (no qcad there)"
+
+TARGET="$HOME_DIR/$RELPATH"
+
+# ---- uninstall --------------------------------------------------------------
+if [ "$UNINSTALL" = 1 ]; then
+    if [ ! -d "$TARGET" ]; then
+        say "$PROG: not installed in $HOME_DIR; nothing to do"
+        exit 0
+    fi
+    [ -w "$(dirname "$TARGET")" ] \
+        || die "no write permission for $(dirname "$TARGET"); re-run with sudo"
+    rm -rf "$TARGET" || die "could not remove $TARGET"
+    say "$PROG: removed $TARGET"
+    say "$PROG: restart QCAD to drop the menu entries"
+    exit 0
+fi
+
+# ---- install ----------------------------------------------------------------
+[ -d "$SRC" ] || die "cannot find the add-on sources at $SRC"
+[ -f "$ENGINE" ] || die "cannot find RepairEngine.js at $ENGINE"
+
+mkdir -p "$TARGET" 2>/dev/null \
+    || die "cannot create $TARGET; re-run with sudo if QCAD is installed system-wide"
+[ -w "$TARGET" ] || die "no write permission for $TARGET; re-run with sudo"
+
+# The add-on includes RepairEngine.js from its own folder, so the engine is
+# copied in beside it rather than referenced back to this repo: the add-on
+# then keeps working if this folder moves.
+cp -f "$SRC"/* "$TARGET"/ || die "could not copy the add-on to $TARGET"
+cp -f "$ENGINE" "$TARGET"/ || die "could not copy RepairEngine.js to $TARGET"
+
+missing=0
+for f in RepairDrawings.js RepairDrawingsInit.js RepairEngine.js; do
+    [ -f "$TARGET/$f" ] || { echo "$PROG: missing after install: $f" >&2; missing=1; }
+done
+[ "$missing" = 0 ] || die "installation incomplete"
+
+say "$PROG: installed into $TARGET"
+say "$PROG: restart QCAD, then use:"
+say "           Misc > IO > Repair Current Drawing      (command: repairdrawing)"
+say "           Misc > IO > Repair Drawing Files...      (command: repairfiles)"

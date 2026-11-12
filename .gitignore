@@ -1,0 +1,25 @@
+# Drawings: inputs and repaired outputs never belong in this repo.
+# They are customer data, large, and regenerable from the input set.
+*.dwg
+*.dxf
+*-repaired/
+.repair-logs/
+
+# QCAD itself, if anyone unpacks an install here for testing
+qcad-*/
+
+# Scratch output
+*.log
+*.pdf
+*.png
+
+# Editors / OS
+*~
+*.swp
+*.bak
+.idea/
+.vscode/
+.DS_Store
+
+# QCAD add-on install target, if anyone tests inside a checkout
+scripts/
