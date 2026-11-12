@@ -29,7 +29,7 @@ faster for bulk work; see **Which front end** below.
 - Linux, `bash`, `realpath`, `find` (GNU coreutils). Developed against QCAD
   3.32.1 Pro on Linux.
 
-Both front ends find QCAD themselves: they honour `$QCAD_HOME`, then look for
+Both front ends find QCAD themselves: they honor `$QCAD_HOME`, then look for
 `~/opt/qcad-*-pro-linux-*/qcad` and `/opt/qcad-*/qcad`, then fall back to
 `qcad` on `$PATH`.
 
@@ -150,7 +150,7 @@ Removing both typically takes import, redraw and plot times down by one to two
 orders of magnitude and the recursion warnings to zero.
 
 **Nothing visible is lost.** Verified by plotting repaired and unrepaired
-versions to PDF and rasterising at 150 dpi: differences are a few dozen pixels
+versions to PDF and rasterizing at 150 dpi: differences are a few dozen pixels
 in millions, all antialiasing on unchanged geometry. The repair also survives
 round-tripping — a repaired file opened and re-saved through QCAD comes back
 clean.
@@ -226,11 +226,11 @@ A few-line fix there is effective but cannot be applied to a Pro install, so
 repairing the files is the only route that works with a stock Pro QCAD. The
 proper long-term fix is an upstream bug report to RibbonSoft.
 
-## Licence
+## License
 
 Copyright (C) 2026 dhunt84971
 
 GNU General Public License v3.0 — see [LICENSE](LICENSE).
 
 These scripts run inside QCAD and use its GPL-licensed scripting API, so they
-are released under the same licence as QCAD community.
+are released under the same license as QCAD community.
